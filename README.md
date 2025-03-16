@@ -44,9 +44,11 @@ For the initial analysis of the network and range of data, streamflow was downlo
 
 # Running scripts
 ## Download Raw data
-If you use the data from `processed` directory skip this step.
+If you use the data from `data` directory skip this step, the raw data are in subdirectories, but the scripts here will start by downloaded the raw data.
 
 The script `src/download-precip.py` can be run interactively to open a browser and remotely control it using python. The codes there can extract the stations co-ordinates, which can be put in a GIS software to find the stations that are useful, and the second part will use that list and download the precipitation data for those stations.
+
+The results from this steps are the CSV files in `data/streamflow` and `data/precip/raw`.
 
 ## Processing Raw Data
 The raw data for streamflow and precipitation are not hourly so we need to work on that.
@@ -54,6 +56,16 @@ The raw data for streamflow and precipitation are not hourly so we need to work 
 ### Streamflow
 For streamflow, out of all the input data, there are different time range and the frequency.
 
+The processing is done with `src/streamflow-pre-process.py` script. It loads the station `03227500`, then loads two input nodes, and one output node.
+
+Using `pandas` we took the 15 minutes interval irregular data into 1 hr regular data. We limit the interpolation to max of 2 hour (8*15min). Then we use the catchment area ration method to fill the station data from inputput and output nodes.
+
+The output of this step is the file `data/streamflow-filled.csv`
+
+### Precipitation
+Precipitation data is more weird as it is supposed to be accumulated data, but there is no regular resetting of the accumulation date. So, algorithms were used to automatically detect the reset points, and some visualization and manual checks and edits were required.
+
+The output of this step are files: `data/precip-and-sf.csv` and `data/precip-hourly.csv`
 
 ## Running the clustering algorithm
 
