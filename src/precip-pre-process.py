@@ -22,8 +22,8 @@ for fname in files:
 
 
 # if you have partially done the processing, do this to skip them
-files2 = os.listdir("./data/precip/hourly/")
-selected = list(set(selected).difference(set(files2)))
+# files2 = os.listdir("./data/precip/hourly/")
+# selected = list(set(selected).difference(set(files2)))
 
 
 def load_increm_prec(filename):
