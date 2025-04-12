@@ -69,3 +69,19 @@ The output of this step are files: `data/precip-and-sf.csv` and `data/precip-hou
 
 ## Running the clustering algorithm
 
+The `src/clustering.py` file has the code for clustering of the precipitation stations. We look at the correlation between stations. Then do PCA transformation and Kmeans algorithm to find the clusters. Using the Knee Locator, we found 5 clusters in the precipitation stations.
+
+![Knee Locator](./images/knee.png)
+
+
+# Future Steps
+
+## Converting it to Stage
+We have streamflow prediction, but we need the stage prediction for us to be able to know the flood situation.
+
+We have the actual measurements of discharge and streamflow from USGS, as well as the rating curve used by them.
+
+The figure below shows the field measurements, and the grey line shows the rating curve from USGS.
+
+![Rating Curve](./images/stage-discharge.png)
+
