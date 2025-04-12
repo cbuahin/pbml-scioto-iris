@@ -1,6 +1,9 @@
 import pandas as pd
 from plotly.subplots import make_subplots
 import plotly.graph_objects as go
+import matplotlib.pyplot as plt
+import numpy as np
+
 
 # 1629 square miles
 nodear = 1629
@@ -33,12 +36,50 @@ inps = pd.DataFrame({
 },
                     index = node.index
 )
-inp = (inps.inp1.fillna(0) + inps.inp2.fillna(0)) / (inps.inp1.notna() * inp1ar + inps.inp2.notna() * inp2ar) * nodear
+# inp = (inps.inp1.fillna(0) + inps.inp2.fillna(0)) / (inps.inp1.notna() * inp1ar + inps.inp2.notna() * inp2ar) * nodear
+inp = (inps.inp1 + inps.inp2) / ( inp1ar + inp2ar) * nodear
 inp.index.name = "datetime"
 out = outratio * rawout.resample('15min').mean().interpolate(limit=8).resample("1h").asfreq()
 
 
-filled = node.fillna(out).fillna(inp)
+plt.plot(inp.index, inp)
+plt.plot(node.index, node)
+
+fillfrom = pd.DataFrame({"node": node, "inputs": inp, "output": out, "input 1": inps.inp1, "input 2": inps.inp2}, index=node.index)
+corrs = fillfrom.corr().loc["node"]
+
+fig, ax = plt.subplots(2, 2, sharex=True, sharey=True)
+for i, col in enumerate(['inputs', 'output', 'input 1', 'input 2']):
+    j = i // 2
+    i = i % 2
+    corr = corrs.loc[col]
+    ax[i, j].scatter(fillfrom.node, fillfrom.loc[:, col], s= 2, alpha = 0.3)
+    ax[i, j].plot([0, 7e4], [0, 7e4], c="red")
+    ax[i, j].set_title(f"{col} (r = {corr:.3})")
+    if i == 1:
+        ax[i, j].set_xlabel("node discharge")
+    if j == 0:
+        ax[i, j].set_ylabel("inputs discharge")
+
+plt.show()
+
+
+
+filled = node.fillna(inp).fillna(out).fillna(inps.inp1 / inp1ar * nodear).fillna(inps.inp2 / inp2ar * nodear)
+
+cat = lambda v: (lambda s: pd.NA if pd.isna(s) else v)
+
+fillcat = node.map(cat("node")).fillna(inp.map(cat("inputs"))).fillna(out.map(cat("output"))).fillna(inps.inp1.map(cat("input 1"))).fillna(inps.inp2.map(cat("input 2"))).fillna("N/A")
+
+pd.DataFrame({"count" : fillcat.value_counts(), "correlation": corrs}).sort_values("count", ascending=False)
+#             count  correlation
+# node     280237.0     1.000000
+# input 1   14611.0     0.947286
+# N/A        2656.0          NaN
+# output     1324.0     0.963151
+# inputs      155.0     0.981310
+# input 2       NaN     0.776993
+
 node.isna().sum()
 filled.isna().sum()
 

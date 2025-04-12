@@ -4,6 +4,11 @@ import seaborn as sns
 import setuptools.dist
 from tensorflow.keras import layers
 from tensorflow.keras import Model
+from tensorflow.keras.activations import relu
+import tensorflow.keras.backend as K
+
+# this library is not upto date and couldn't use monotonicity using this
+# from airt.keras.layers import MonoDense
 
 import matplotlib.pyplot as plt
 
@@ -16,8 +21,9 @@ df = df_org.copy(deep=True)
 sf_org = df.pop("streamflow")
 sf = sf_org.copy(deep=True)
 
-trend = sf_org.rolling(24, center=False).mean().shift(24)
-s2 = (sf - trend)
+trend = sf_org.rolling(24, center=False).mean()
+# s2 = (sf - trend)
+s2 = sf
 
 y_mean = np.mean(sf)
 y_std = np.std(sf)
@@ -105,20 +111,28 @@ testdt = nonaind[split:,]
 
 
 inp = layers.Input(shape=(N, ))
-x = layers.Dense(128, activation='sigmoid')(inp)
+x = layers.Dense(
+    128,
+    activation='sigmoid')(inp)
+#    monotonicity_indicator=[1 if col.endswith("r06") else 0 for col in df.columns]
 x = layers.Dropout(0.4)(x)
 x = layers.Dense(16, activation='linear')(x)
 x = layers.Dropout(0.4)(x)
-output = layers.Dense(1, activation='linear')(x)
+
+# using relu with negative slope to avoid problem with backpropagation
+output = layers.Dense(1, activation=lambda x: relu(x, threshold=0.0, negative_slope=0.1))(x)
 
 model = Model(inp, output)
 
-model.compile(optimizer="adam", metrics=['mse'], loss="mse")
+def nseloss(y_true, y_pred):
+  return K.sum((y_pred-y_true)**2)/K.sum((y_true-K.mean(y_true))**2)
+
+model.compile(optimizer="adam", metrics=['mse'], loss=nseloss)
 model.summary()
 
 
 batch_size = 64
-epochs = 20
+epochs = 10
 
 split2 = X_train.shape[0] * 70 // 100
 split2dt = nonaind[split2]
@@ -167,20 +181,23 @@ y_train_pred_val = (y_train_pred[:,0] * y_std + y_mean)
 y_test_val = (y_test * y_std + y_mean)
 y_test_pred_val = (y_test_pred[:,0] * y_std + y_mean)
 
-# y_train_pred_val[y_train_pred_val < 0] = 0
-# y_test_pred_val[y_test_pred_val < 0] = 0
+y_train_pred_val[y_train_pred_val < 0] = 0
+y_test_pred_val[y_test_pred_val < 0] = 0
 
 y1 = y_train_val
 y2 = y_train_pred_val
 y3 = y_test_val
 y4 = y_test_pred_val
 
-
+pd.DataFrame(dict(
+    train = errors(y1, y2),
+    test = errors(y3, y4),
+)).T
 
 # y_train_pred[y_train_pred < 0] = 0
 # y_test_pred[y_test_pred < 0] = 0
-min_y = np.min(np.concat([y1, y2, y3, y4]))
-max_y = np.max(np.concat([y1, y2, y3, y4]))
+min_y = np.min(np.concatenate([y1, y2, y3, y4]))
+max_y = np.max(np.concatenate([y1, y2, y3, y4]))
 plt.scatter(y1, y2, label="train", s=0.2)
 plt.scatter(y3, y4, label="test", s=0.2)
 plt.plot([min_y, max_y], [min_y, max_y], label="1:1", c="red")
@@ -189,25 +206,6 @@ plt.xlabel("Observed Flow (cfs)")
 plt.ylabel("Simulated Flow (cfs)")
 
 plt.show()
-
-# th = np.quantile(y1, 0.98)
-
-pd.DataFrame(dict(
-    train = errors(y1, y2),
-    test = errors(y3, y4),
-    # train_high = errors(y1[y1 > th], y2[y1 > th]),
-    # test_high = errors(y3[y3 > th], y4[y3 > th]),
-    # train_log = errors(np.log10(y1 + 0.01), np.log10(y2 + 0.01)),
-    # test_log = errors(np.log10(y3 + 0.01), np.log10(y4 + 0.01)),
-)).T
-
-#             pearsonr           rmse   norm_rmse       nse       kge
-# train       0.761948  774354.831335  389.194691  0.377393  0.473765
-# test        0.870868  205711.619556   58.651485  0.751351  0.725983
-# train_high  0.867805  143632.458480    7.806992  0.569324  0.477226
-# test_high  -0.068099  129653.627462    6.376401 -4.571290 -0.625438
-# train_log   0.926848      52.799216   17.911180  0.855479  0.877141
-# test_log    0.919624      25.730268    8.037608  0.838026  0.881235
 
 obs = pd.concat([
     pd.Series(y_train_val, index=traindt),
@@ -218,8 +216,8 @@ sim = pd.concat([
     pd.Series(y_test_pred_val, index=testdt)
 ])
 
-obs = obs + trend[obs.index]
-sim = sim + trend[obs.index]
+# obs = obs + trend[obs.index]
+# sim = sim + trend[obs.index]
 
 AGG_DAILY = False
 # if we want to see aggregates
@@ -267,7 +265,7 @@ testy = result.simulated.loc[result.category == "test"]
 validx = result.observed.loc[result.category == "validation"]
 validy = result.simulated.loc[result.category == "validation"]
 
-high_threshold = result.observed.quantile(0.9)
+high_threshold = result.observed.quantile(0.99)
 
 pd.DataFrame(dict(
     train=errors(trainx, trainy),
@@ -277,47 +275,3 @@ pd.DataFrame(dict(
     test_high=errors(testx.loc[testx > high_threshold], testy.loc[testx > high_threshold]),
     valid_high=errors(validx.loc[validx > high_threshold], validy.loc[validx > high_threshold]),
 )).T
-
-#        pearsonr           rmse   norm_rmse       nse       kge
-# train  0.989274  139680.528093  144.087171  0.978500  0.953362
-# test   0.917972  217229.655145  114.806614  0.841511  0.867988
-# valid  0.904803  279245.076570   98.015559  0.818137  0.813765
-
-# dfs = pd.DataFrame(dict(obs=sf_org, sim=trend)).dropna()
-
-# pd.DataFrame(dict(
-#     train=errors(
-#         dfs.obs,
-#         dfs.sim
-#     ),
-# )).T
-
-# #        pearsonr           rmse   norm_rmse       nse      kge
-# # train  0.791343  813252.292677  252.063574  0.588785  0.78913
-
-# # So we already have a good enough model with predicting a flat mean for future, our above model should have better results than this
-
-
-# sns.scatterplot(dfs, x="obs", y="sim")
-# plt.show()
-
-# # sensitivity analysis
-# sensitivity = {}
-# for col in df.columns:
-#     df2 = df.loc[sel, :].copy(deep=True)
-#     df2.loc[:, col] = np.random.rand(len(df.index))
-#     vals = model.predict(df2.values)
-#     sim2 = pd.Series(vals[:, 0], index=sel.index[sel])
-#     sim2 = sim2 + trend[sim2.index]
-#     sensitivity[col] = errors(obs.values, sim2.values)
-
-
-# base_errors = pd.Series(errors(obs.values, sim.values))
-# new_errors = pd.DataFrame(sensitivity).T
-
-# new_errors.nse.plot()
-
-# t = new_errors.nse.quantile(0.25)
-# new_errors.sort_values(by="nse", ascending=False).head(20)
-
-# plt.show()
