@@ -6,6 +6,7 @@ from tensorflow.keras import layers
 from tensorflow.keras import Model
 from tensorflow.keras.activations import relu
 import tensorflow.keras.backend as K
+import tensorflow as tf
 
 # this library is not upto date and couldn't use monotonicity using this
 # from airt.keras.layers import MonoDense
@@ -124,10 +125,23 @@ output = layers.Dense(1, activation=lambda x: relu(x, threshold=0.0, negative_sl
 
 model = Model(inp, output)
 
+
 def nseloss(y_true, y_pred):
   return K.sum((y_pred-y_true)**2)/K.sum((y_true-K.mean(y_true))**2)
 
-model.compile(optimizer="adam", metrics=['mse'], loss=nseloss)
+
+def mse_w_penalty(y_true, y_pred):
+  mse = K.sum((y_pred-y_true)**2)
+  true_rank = tf.argsort(y_true)
+  pred_rank = tf.argsort(y_pred)
+  # add penalty when there is large difference in rank/quantile of the
+  # values predicted and observed; hope it helps with monotonicity;
+  # doesn't seem to do much
+  mse += 0.01 * tf.cast(K.sum((pred_rank-true_rank)**2), tf.float32)
+  return mse
+
+
+model.compile(optimizer="adam", metrics=['mse', nseloss, mse_w_penalty], loss=mse_w_penalty)
 model.summary()
 
 
