@@ -1,170 +1,314 @@
+import os
+from typing import List
 import pandas as pd
 import numpy as np
 import seaborn as sns
 import setuptools.dist
-from tensorflow.keras import layers
+from tensorflow.keras import layers, activations, callbacks, optimizers, models
 from tensorflow.keras import Model
 from tensorflow.keras.activations import relu
+import tensorflow_probability as tfp
 import tensorflow.keras.backend as K
 import tensorflow as tf
+import tensorflow_probability as tfp
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
+from sklearn.model_selection import train_test_split
 
 # this library is not upto date and couldn't use monotonicity using this
 # from airt.keras.layers import MonoDense
 
 import matplotlib.pyplot as plt
 
+HERE = os.path.dirname(os.path.abspath(__file__))
 
-df_org = pd.read_csv("data/combined-all.csv", index_col="datetime")
-df_org.index = pd.to_datetime(df_org.index)
+precip_fields = ['group_0','group_1','group_2','group_3']
+endogenous_fields = ["streamflow"]
 
+df_org = pd.read_csv(os.path.join(HERE, "../data/combined-all.csv"), index_col="datetime", parse_dates=True)
 df = df_org.copy(deep=True)
 
-sf_org = df.pop("streamflow")
-sf = sf_org.copy(deep=True)
+trend = df[endogenous_fields].rolling(pd.Timedelta(hours=24), center=True).mean()
 
-trend = sf_org.rolling(24, center=False).mean()
-# s2 = (sf - trend)
-s2 = sf
+new_columns = {}
 
-y_mean = np.mean(sf)
-y_std = np.std(sf)
-sf_norm = lambda f: (f - y_mean)/y_std
+for field in precip_fields:
+    new_columns[f'{field}_3h'] = df[field].rolling(pd.Timedelta(hours=3)).sum()
+    new_columns[f'{field}_6h'] = df[field].rolling(pd.Timedelta(hours=6)).sum()
+    new_columns[f'{field}_9h'] = df[field].rolling(pd.Timedelta(hours=9)).sum()
+    new_columns[f'{field}_12h'] = df[field].rolling(pd.Timedelta(hours=12)).sum()
+    new_columns[f'{field}_15h'] = df[field].rolling(pd.Timedelta(hours=15)).sum()
+    new_columns[f'{field}_18h'] = df[field].rolling(pd.Timedelta(hours=18)).sum()
+    new_columns[f'{field}_21h'] = df[field].rolling(pd.Timedelta(hours=21)).sum()
+    new_columns[f'{field}_24h'] = df[field].rolling(pd.Timedelta(hours=24)).sum()
+    new_columns[f'{field}_36h'] = df[field].rolling(pd.Timedelta(hours=36)).sum()
+    new_columns[f'{field}_48h'] = df[field].rolling(pd.Timedelta(hours=48)).sum()
+    new_columns[f'{field}_72h'] = df[field].rolling(pd.Timedelta(hours=72)).sum()
+    new_columns[f'{field}_7d'] = df[field].rolling(pd.Timedelta(days=7)).sum()
+    new_columns[f'{field}_14d'] = df[field].rolling(pd.Timedelta(days=14)).sum()
+    new_columns[f'{field}_30d'] = df[field].rolling(pd.Timedelta(days=30)).sum()
+    new_columns[f'{field}_60d'] = df[field].rolling(pd.Timedelta(days=60)).sum()
 
-y_mean = np.mean(s2)
-y_std = np.std(s2)
-s2_norm = lambda f: (f - y_mean)/y_std
-s = s2.map(s2_norm)
+# Add all new columns to the DataFrame at once
+df = pd.concat([df, pd.DataFrame(new_columns, index=df.index)], axis=1)
 
-rol03 = df.rolling(3).mean()
-rol06 = df.rolling(6).mean()
-rol12 = df.rolling(12).mean()
-rol24 = df.rolling(24).mean()
-rol24007 = df.rolling(24*7).mean()
+# Update precip_fields
+precip_fields.extend(new_columns.keys())
+exogenous_fields = [*precip_fields]
 
-lag06 = rol06.shift(6)
-lag0612 = rol06.shift(12)
-lag12 = rol12.shift(12)
+def add_seasonality_signals(
+        data: pd.DataFrame,
+        seasonality_signals: List[str],
+        add_sine: bool = True,
+        add_cosine: bool = True
+):
+    """
+    Add seasonality signals to the data
+    :return:
+    """
+    d = data.copy()
 
-df = df.join(rol03, rsuffix="r03")
-df = df.join(rol06, rsuffix="r06")
-df = df.join(rol12, rsuffix="r12")
-df = df.join(lag06, rsuffix="l06")
-df = df.join(lag0612, rsuffix="l0612")
-df = df.join(lag12, rsuffix="l12")
-df = df.join(rol24, rsuffix="r24")
-df = df.join(rol24007, rsuffix="r24007")
+    for signal in seasonality_signals:
+        if signal == 'hour_of_day':
+            hour_of_day = d.index.hour + d.index.minute / 60 + d.index.second / 3600
+            d['hour_of_day'] = hour_of_day
+            if add_sine:
+                d['hour_of_day_sin'] = np.sin(2 * np.pi * hour_of_day / 24)
+            if add_cosine:
+                d['hour_of_day_cos'] = np.cos(2 * np.pi * hour_of_day / 24)
+        elif signal == 'day_of_week':
+            hour_of_day = d.index.hour + d.index.minute / 60 + d.index.second / 3600
+            d['day_of_week'] = d.index.dayofweek + hour_of_day / 24
+            if add_sine:
+                d['day_of_week_sin'] = np.sin(2 * np.pi * d['day_of_week'] / 7)
+            if add_cosine:
+                d['day_of_week_cos'] = np.cos(2 * np.pi * d['day_of_week'] / 7)
+        elif signal == 'day_of_year':
+            hour_of_day = d.index.hour + d.index.minute / 60 + d.index.second / 3600
+            day_of_year = d.index.dayofyear + hour_of_day / 24
+            d['day_of_year'] = day_of_year
+            if add_sine:
+                d['day_of_year_sin'] = np.sin(2 * np.pi * day_of_year / 365)
+            if add_cosine:
+                d['day_of_year_cos'] = np.cos(2 * np.pi * day_of_year / 365)
 
-# scale precipitation
-# df = df.apply(np.sqrt)
-Prec_mean = np.mean(df)
-Prec_std = np.std(df.dropna().values)
-df = (df - Prec_mean)/Prec_std
+    return d
 
-sf_lag_24 = sf.shift(24).map(sf_norm)
-sf_lag_24_06 = sf.shift(24).rolling(6).mean().map(sf_norm)
-sf_lag_24_24 = sf.shift(24).rolling(24).mean().map(sf_norm)
+df = add_seasonality_signals(df, seasonality_signals =['day_of_year'])
+df.dropna(inplace=True)
 
-df = df.join(sf_lag_24, rsuffix="sf_l24")
-df = df.join(sf_lag_24_06, rsuffix="sf_l24_06")
-df = df.join(sf_lag_24_24, rsuffix="sf_l24_24")
+exogenous_fields.append('day_of_year_sin')
+exogenous_fields.append('day_of_year_cos')
 
-# seasonality and day of time proxy
-numdays = pd.Series(df.index.is_leap_year).map({True: 366, False: 365})
-seasonality = (df.index.day_of_year / numdays) * np.pi * 2
-timeofday = (df.index.hour + df.index.minute / 60) / 24 * np.pi * 2
-proxies = pd.DataFrame(dict(
-    season_y=seasonality.map(np.sin),
-    season_x=seasonality.map(np.cos),
-    time_y=timeofday.map(np.sin),
-    time_x=timeofday.map(np.cos),
-))
-proxies.index = df.index
+x = df[exogenous_fields]
+y = df[endogenous_fields]
 
-df = df.join(proxies)
+from sklearn import set_config
+set_config(transform_output="pandas")
 
-nonaind = df.join(s2, rsuffix="sth").dropna().index
-df = df.loc[nonaind, :]
-sf = s2.loc[nonaind]
+scalar_x = MinMaxScaler().fit(x)
+scalar_y = MinMaxScaler().fit(y)
 
-X = df.to_numpy()
-y = s.loc[df.index].values
-N = X.shape[1]
+x_scaled = scalar_x.transform(x)
+y_scaled = scalar_y.transform(y)
 
-X.shape, y.shape
+# X = df.to_numpy()
+# y = s.loc[df.index].values
+# N = X.shape[1]
+#
+# X.shape, y.shape
+dropout = 0.3
 
 # random split
-# X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.1, random_state=0)
-split = X.shape[0] * 70 // 100
-splitdt = nonaind[split]
-# temporal split
-X_train = X[:split,]
-X_test = X[split:,]
-y_train = y[:split]
-y_test = y[split:]
-traindt = nonaind[:split,]
-testdt = nonaind[split:,]
-# X_train = X[-split:,]
-# X_test = X[:-split,]
-# y_train = y[-split:]
-# y_test = y[:-split]
-# traindt = sel.index[sel][-split:,]
-# testdt = sel.index[sel][:-split]
+x_train, x_test, y_train, y_test = train_test_split(x_scaled, y_scaled, test_size=0.3, shuffle=False)
+x_train_a, x_valid, y_train_a, y_valid = train_test_split(x_train, y_train, test_size=0.3, shuffle=False)
+
+precip_perturbations = np.arange(1.0, 1.5+0.05, 0.05)
+x_train_a= np.repeat(x_train_a.values[:, np.newaxis, :], len(precip_perturbations), axis=1)
 
 
-inp = layers.Input(shape=(N, ))
-x = layers.Dense(
-    128,
-    activation='sigmoid')(inp)
-#    monotonicity_indicator=[1 if col.endswith("r06") else 0 for col in df.columns]
-x = layers.Dropout(0.4)(x)
-x = layers.Dense(16, activation='linear')(x)
-x = layers.Dropout(0.4)(x)
+def probabilistic_layer(y_pred):
+    distribution = tfp.distributions.Normal(loc=layers.Dense(1)(y_pred[...,0]),
+                                            scale=tf.exp(layers.Dense(1)(y_pred[...,1])))
+    return distribution
 
-# using relu with negative slope to avoid problem with backpropagation
-output = layers.Dense(1, activation=lambda x: relu(x, threshold=0.0, negative_slope=0.1))(x)
+# perturb the rainfall fields
+for i, perturbation in enumerate(precip_perturbations):
+    x_train_a[:, i, :len(precip_fields)] *= perturbation
 
-model = Model(inp, output)
+model = models.Sequential([
+    layers.Input(shape=(None, len(exogenous_fields))),
+    layers.Dense(64),
+    layers.PReLU(shared_axes=[-1]),
+    layers.Dropout(dropout),
+    layers.Dense(128),
+    layers.PReLU(shared_axes=[-1]),
+    layers.Dropout(dropout),
+    layers.Dense(128),
+    layers.PReLU(shared_axes=[-1]),
+    layers.Dropout(dropout),
+    layers.Dense(32),
+    layers.PReLU(shared_axes=[-1]),
+    layers.Dropout(dropout),
+    # output layer
+    layers.Dense(1, activation="relu"),
+    # probabilistic layer
+    # layers.Lambda(probabilistic_layer)
+    ]
+)
+# inp_layer = layers.Input(shape=(None, len(exogenous_fields)))
+#
+# model_layer = layers.Dense(64)(inp_layer)
+# model_layer = layers.PReLU(shared_axes=[-1])(model_layer)
+# model_layer = layers.Dropout(dropout)(model_layer)
+#
+# model_layer = layers.Dense(128)(model_layer)
+# model_layer = layers.PReLU(shared_axes=[-1])(model_layer)
+# model_layer = layers.Dropout(dropout)(model_layer)
+#
+# model_layer = layers.Dense(128)(model_layer)
+# model_layer = layers.PReLU(shared_axes=[-1])(model_layer)
+# model_layer = layers.Dropout(dropout)(model_layer)
+#
+# model_layer = layers.Dense(32)(model_layer)
+# model_layer = layers.PReLU(shared_axes=[-1])(model_layer)
+# model_layer = layers.Dropout(dropout)(model_layer)
+#
+# output = layers.Dense(1, activation=layers.PReLU(shared_axes=[-1]))(model_layer)
+# model = Model(inp_layer, output)
 
 
-def nseloss(y_true, y_pred):
-  return K.sum((y_pred-y_true)**2)/K.sum((y_true-K.mean(y_true))**2)
+# test model output
+# model.predict(x_train[:5])
 
 
-def mse_w_penalty(y_true, y_pred):
-  mse = K.sum((y_pred-y_true)**2)
-  true_rank = tf.argsort(y_true)
-  pred_rank = tf.argsort(y_pred)
-  # add penalty when there is large difference in rank/quantile of the
-  # values predicted and observed; hope it helps with monotonicity;
-  # doesn't seem to do much
-  mse += 0.01 * tf.cast(K.sum((pred_rank-true_rank)**2), tf.float32)
-  return mse
+def nse_loss(y_true, y_pred):
+    if isinstance(y_pred, tfp.distributions.Distribution):
+        y_pred_mean = y_pred.mean()
+    else:
+        y_pred_mean = y_pred
+
+    if len(y_pred_mean.shape) > 2:
+        y_pred_mean = y_pred_mean[:,0,...]
+
+    return K.sum((y_pred_mean-y_true)**2)/K.sum((y_true-K.mean(y_true))**2)
+
+def mse_loss(y_true, y_pred):
+    if isinstance(y_pred, tfp.distributions.Distribution):
+        y_pred_mean = y_pred.mean()
+    else:
+        y_pred_mean = y_pred
+
+        if len(y_pred_mean.shape) > 2:
+            y_pred_mean = y_pred_mean[:,0,...]
+
+    return K.mean(K.square(y_pred_mean - y_true))
 
 
-model.compile(optimizer="adam", metrics=['mse', nseloss, mse_w_penalty], loss=mse_w_penalty)
+def monotonicity_loss(y_true, y_pred):
+    """
+    Monotonicity loss function
+    :param y_true:
+    :param y_pred:
+    :return:
+    """
+    if isinstance(y_pred, tfp.distributions.Distribution):
+        y_pred_mean = y_pred.mean()
+    else:
+        y_pred_mean = y_pred
+
+    int_mse_loss = 0
+
+
+    # y_pred = tf.squeeze(y_pred, axis=-1)
+    return int_mse_loss
+
+def negative_log_likelihood(y_true, y_pred):
+    """
+    Negative log likelihood loss function
+    :param y_true:
+    :param y_pred:
+    :return:
+    """
+    if isinstance(y_pred, tfp.distributions.Distribution):
+        # check shape of y_pred scale
+        if len(y_pred.scale.shape) > 2:
+            y_true = tf.repeat(y_true[:, tf.newaxis , ...], y_pred.scale.shape[1], axis=1)
+            log_likelihood = y_pred.log_prob(y_true)
+        else:
+            log_likelihood = y_pred.log_prob(y_true)
+
+        return -tf.reduce_mean(log_likelihood)
+
+    return 0.0
+
+def combined_loss(y_true, y_pred):
+    """
+    Combined loss function
+    :param y_true:
+    :param y_pred:
+    :return:
+    """
+    mse = mse_loss(y_true, y_pred)
+    ngll
+    return mse + nse
+
+model.compile(
+    optimizer="adam",
+    metrics=[nse_loss, mse_loss],
+    loss=mse_loss,
+    # run_eagerly=True
+)
+
+# model._train_counter = 0
+# model._test_counter = 0
+# model._is_graph_network = False
 model.summary()
 
 
 batch_size = 64
-epochs = 10
+epochs = 100
+#
+# split2 = X_train.shape[0] * 70 // 100
+# split2dt = nonaind[split2]
+# # temporal split
+# X_train_t = X_train[:split2,]
+# X_train_v = X_train[split2:,]
+# y_train_t = y_train[:split2]
+# y_train_v = y_train[split2:]
 
-split2 = X_train.shape[0] * 70 // 100
-split2dt = nonaind[split2]
-# temporal split
-X_train_t = X_train[:split2,]
-X_train_v = X_train[split2:,]
-y_train_t = y_train[:split2]
-y_train_v = y_train[split2:]
+hist = model.fit(
+    x_train_a, y_train_a,
+    batch_size=batch_size,
+    epochs=epochs,
+    validation_data = (x_valid.values[:, np.newaxis, ...], y_valid),
+    callbacks=[
+        callbacks.EarlyStopping(
+            monitor='val_loss', patience=10, restore_best_weights=True
+        ),
+        callbacks.ReduceLROnPlateau(
+            monitor='val_loss', factor=0.5, patience=5, min_lr=1e-6
+        ),
+        callbacks.CSVLogger(
+            os.path.join(HERE, "training.log"), append=True
+        ),
+        callbacks.TensorBoard(
+            log_dir=os.path.join(HERE, "logs"), update_freq="epoch"
+        ),
+        callbacks.ModelCheckpoint(
+            os.path.join(HERE, "model.h5"), save_best_only=True
+        ),
+        callbacks.TerminateOnNaN(),
+    ],
 
-hist = model.fit(X_train_t, y_train_t, batch_size=batch_size, epochs=epochs, validation_data = (X_train_v, y_train_v))
+)
 
 plt.plot(hist.history['loss'], label='loss')
 plt.plot(hist.history['val_loss'], label='val_loss')
 plt.legend()
 plt.show()
 
-y_train_pred = model.predict(X_train)
-y_test_pred = model.predict(X_test)
+y_train_pred = model.predict(x_train)
+y_test_pred = model.predict(y_train)
 
 
 def errors(true_vals, calc_vals):
@@ -190,6 +334,12 @@ def errors(true_vals, calc_vals):
         kge = kge_err,
     )
 
+streamflow = df[endogenous_fields]
+y_mean = np.mean(streamflow)
+y_std = np.std(streamflow)
+sf_norm = lambda f: (f - y_mean)/y_std
+
+
 y_train_val = (y_train * y_std + y_mean)
 y_train_pred_val = (y_train_pred[:,0] * y_std + y_mean)
 y_test_val = (y_test * y_std + y_mean)
@@ -203,10 +353,10 @@ y2 = y_train_pred_val
 y3 = y_test_val
 y4 = y_test_pred_val
 
-pd.DataFrame(dict(
-    train = errors(y1, y2),
-    test = errors(y3, y4),
-)).T
+# pd.DataFrame(dict(
+#     train = errors(y1, y2),
+#     test = errors(y3, y4),
+# )).T
 
 # y_train_pred[y_train_pred < 0] = 0
 # y_test_pred[y_test_pred < 0] = 0
@@ -239,20 +389,20 @@ if AGG_DAILY:
     obs = obs.resample("1d").mean().dropna()
     sim = sim.resample("1d").mean().dropna()
 
-result = pd.DataFrame(dict(observed=obs, simulated=sim))
+# result = pd.DataFrame(dict(observed=obs, simulated=sim))
 
 
-def category(dt):
-    if dt < split2dt:
-        return "train"
-    elif dt < splitdt:
-        return "test"
-    return "validation"
+# def category(dt):
+#     if dt < split2dt:
+#         return "train"
+#     elif dt < splitdt:
+#         return "test"
+#     return "validation"
 
 
-result.loc[:, "category"] = result.index.map(category)
-result.loc[:, "trend"] = trend
-result.to_csv(f"pbml-results{'-daily' if AGG_DAILY else ''}.csv")
+# result.loc[:, "category"] = result.index.map(category)
+# result.loc[:, "trend"] = trend
+# result.to_csv(f"pbml-results{'-daily' if AGG_DAILY else ''}.csv")
 
 # sns.lineplot(sf)
 # sns.scatterplot(result, x = "datetime", y="observed", hue="category")
@@ -281,11 +431,11 @@ validy = result.simulated.loc[result.category == "validation"]
 
 high_threshold = result.observed.quantile(0.99)
 
-pd.DataFrame(dict(
-    train=errors(trainx, trainy),
-    test=errors(testx, testy),
-    valid=errors(validx, validy),
-    train_high=errors(trainx.loc[trainx > high_threshold], trainy.loc[trainx > high_threshold]),
-    test_high=errors(testx.loc[testx > high_threshold], testy.loc[testx > high_threshold]),
-    valid_high=errors(validx.loc[validx > high_threshold], validy.loc[validx > high_threshold]),
-)).T
+# pd.DataFrame(dict(
+#     train=errors(trainx, trainy),
+#     test=errors(testx, testy),
+#     valid=errors(validx, validy),
+#     train_high=errors(trainx.loc[trainx > high_threshold], trainy.loc[trainx > high_threshold]),
+#     test_high=errors(testx.loc[testx > high_threshold], testy.loc[testx > high_threshold]),
+#     valid_high=errors(validx.loc[validx > high_threshold], validy.loc[validx > high_threshold]),
+# )).T
