@@ -13,11 +13,14 @@ import tensorflow as tf
 import tensorflow_probability as tfp
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.model_selection import train_test_split
+from datetime import datetime
+import matplotlib
 
 # this library is not upto date and couldn't use monotonicity using this
 # from airt.keras.layers import MonoDense
 
 import matplotlib.pyplot as plt
+from helper_funcs import *
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -36,14 +39,9 @@ for field in precip_fields:
     new_columns[f'{field}_6h'] = df[field].rolling(pd.Timedelta(hours=6)).sum()
     new_columns[f'{field}_9h'] = df[field].rolling(pd.Timedelta(hours=9)).sum()
     new_columns[f'{field}_12h'] = df[field].rolling(pd.Timedelta(hours=12)).sum()
-    new_columns[f'{field}_15h'] = df[field].rolling(pd.Timedelta(hours=15)).sum()
-    new_columns[f'{field}_18h'] = df[field].rolling(pd.Timedelta(hours=18)).sum()
-    new_columns[f'{field}_21h'] = df[field].rolling(pd.Timedelta(hours=21)).sum()
     new_columns[f'{field}_24h'] = df[field].rolling(pd.Timedelta(hours=24)).sum()
-    new_columns[f'{field}_36h'] = df[field].rolling(pd.Timedelta(hours=36)).sum()
     new_columns[f'{field}_48h'] = df[field].rolling(pd.Timedelta(hours=48)).sum()
     new_columns[f'{field}_72h'] = df[field].rolling(pd.Timedelta(hours=72)).sum()
-    new_columns[f'{field}_7d'] = df[field].rolling(pd.Timedelta(days=7)).sum()
     new_columns[f'{field}_14d'] = df[field].rolling(pd.Timedelta(days=14)).sum()
     new_columns[f'{field}_30d'] = df[field].rolling(pd.Timedelta(days=30)).sum()
     new_columns[f'{field}_60d'] = df[field].rolling(pd.Timedelta(days=60)).sum()
@@ -122,13 +120,11 @@ dropout = 0.3
 x_train, x_test, y_train, y_test = train_test_split(x_scaled, y_scaled, test_size=0.3, shuffle=False)
 x_train_a, x_valid, y_train_a, y_valid = train_test_split(x_train, y_train, test_size=0.3, shuffle=False)
 
-precip_perturbations = np.arange(1.0, 1.5+0.05, 0.05)
+precip_perturbations = np.arange(1.0, 2.0+0.05, 0.05)
 x_train_a= np.repeat(x_train_a.values[:, np.newaxis, :], len(precip_perturbations), axis=1)
 
 
-def probabilistic_layer(y_pred: tf.Tensor) -> tfp.distributions.Distribution:
-    distribution = tfp.distributions.Normal(loc=y_pred[...,0], scale=y_pred[...,1])
-    return distribution
+
 
 # perturb the rainfall fields
 for i, perturbation in enumerate(precip_perturbations):
@@ -136,111 +132,25 @@ for i, perturbation in enumerate(precip_perturbations):
 
 model = models.Sequential([
     layers.Input(shape=(None, len(exogenous_fields))),
-    layers.Dense(32),
+    layers.Dense(64),
     layers.PReLU(shared_axes=[-1]),
     layers.Dropout(dropout),
     layers.Dense(128),
     layers.PReLU(shared_axes=[-1]),
     layers.Dropout(dropout),
-    layers.Dense(128),
-    layers.PReLU(shared_axes=[-1]),
-    layers.Dropout(dropout),
     layers.Dense(32),
     layers.PReLU(shared_axes=[-1]),
     layers.Dropout(dropout),
-    # output layer
-    layers.Dense(2),
-    # probabilistic layer
-    # layers.Lambda(probabilistic_layer)
+    layers.Dense(2, activation="softplus"),
     ]
 )
 
 
-def nse_loss(y_true, y_pred):
-
-    y_pred_mean = y_pred
-
-    if len(y_pred_mean.shape) > 2:
-        y_pred_mean = y_pred_mean[...,0,0]
-
-    return K.sum((y_pred_mean-y_true)**2)/K.sum((y_true-K.mean(y_true))**2)
-
-def mse_loss(y_true, y_pred):
-
-    y_pred_mean = y_pred
-
-    if len(y_pred_mean.shape) > 2:
-        y_pred_mean = y_pred_mean[...,0,0]
-
-    return K.mean(K.square(y_pred_mean - y_true))
-
-
-def monotonicity_loss(y_true, y_pred):
-    """
-    Monotonicity loss function
-    :param y_true:
-    :param y_pred:
-    :return:
-    """
-    # B,C,F
-    mse_loss_mon_loss = 0.0
-
-    y_pred_mean = y_pred
-
-    if len(y_pred_mean.shape) > 2:
-        y_pred_mean = y_pred_mean[...,0]
-        y_pred_permute = tf.transpose(y_pred_mean, perm=[1, 0])
-        mse_loss_mon_loss = activations.relu(
-            y_pred_permute[0, :] - y_pred_permute[1:, :]
-        )
-
-        mse_loss_mon_loss = tf.reduce_mean(K.square(mse_loss_mon_loss))
-
-
-    return mse_loss_mon_loss
-
-def negative_log_likelihood(y_true, y_pred):
-    """
-    Negative log likelihood loss function
-    :param y_true:
-    :param y_pred:
-    :return:
-    """
-
-
-        # check shape of y_pred scale
-    if len(y_pred.shape) > 2:
-        normal: tfp.distributions.Distribution = probabilistic_layer(
-            y_pred[..., 0 , :]
-        )
-        log_likelihood = normal.log_prob(y_true)
-    else:
-        normal: tfp.distributions.Distribution = probabilistic_layer(
-            y_pred
-        )
-        log_likelihood = normal.log_prob(y_true)
-
-    return -tf.reduce_mean(log_likelihood)
-
-
-def combined_loss(y_true, y_pred):
-    """
-    Combined loss function
-    :param y_true:
-    :param y_pred:
-    :return:
-    """
-    mse = mse_loss(y_true, y_pred)
-    monotonicity = monotonicity_loss(y_true, y_pred)
-    neg_ll = negative_log_likelihood(y_true, y_pred)
-
-    return mse + monotonicity + neg_ll
 
 model.compile(
     optimizer="adam",
-    metrics=[nse_loss, mse_loss, negative_log_likelihood],
+    metrics=[nse_loss, mse_loss, monotonicity_loss, negative_log_likelihood],
     loss=combined_loss,
-    # run_eagerly=True
 )
 
 # model._train_counter = 0
@@ -251,14 +161,6 @@ model.summary()
 
 batch_size = 32
 epochs = 1000
-#
-# split2 = X_train.shape[0] * 70 // 100
-# split2dt = nonaind[split2]
-# # temporal split
-# X_train_t = X_train[:split2,]
-# X_train_v = X_train[split2:,]
-# y_train_t = y_train[:split2]
-# y_train_v = y_train[split2:]
 
 hist = model.fit(
     x_train_a, y_train_a,
@@ -276,7 +178,8 @@ hist = model.fit(
             os.path.join(HERE, "training.log"), append=True
         ),
         callbacks.TensorBoard(
-            log_dir=os.path.join(HERE, "logs"), update_freq="epoch"
+            log_dir=os.path.join(HERE, "logs", datetime.now().strftime("%Y%m%d-%H%M%S")),
+            update_freq="batch"
         ),
         callbacks.ModelCheckpoint(
             os.path.join(HERE, "model.h5"), save_best_only=True
@@ -291,68 +194,27 @@ plt.plot(hist.history['val_loss'], label='val_loss')
 plt.legend()
 plt.show()
 
-y_train_pred = model.predict(x_train)
-y_test_pred = model.predict(y_train)
+y_train_pred = model.predict(x_train.values[:, np.newaxis, ...])
+y_test_pred = model.predict(x_test.values[:, np.newaxis, ...])
+
+y_train_pred = tfp.distributions.Normal(loc=y_train_pred[..., 0, 0], scale=y_train_pred[..., 0 , 1])
+y_test_pred = tfp.distributions.Normal(loc=y_test_pred[..., 0, 0], scale=y_test_pred[..., 0 , 1])
+
+y_train_pred_scaled = scalar_y.inverse_transform(y_train_pred.mean().numpy()[..., np.newaxis])
+y_test_pred_scaled = scalar_y.inverse_transform(y_test_pred.mean().numpy()[..., np.newaxis])
 
 
-def errors(true_vals, calc_vals):
-    pearsonr_err = np.corrcoef(true_vals, calc_vals)[0,1]
-    rmse_err = np.sqrt(((true_vals - calc_vals)**2).sum())
-    norm_rmse_err = np.sqrt(
-        (((true_vals - calc_vals)/true_vals)**2
-         ).sum())
-    nse_err = 1 - (
-        ((true_vals - calc_vals)**2).sum()
-        / ((true_vals - true_vals.mean())**2).sum()
-        )
-    r = np.corrcoef(true_vals, calc_vals)[1,0]
-    α = np.var(calc_vals) / np.var(true_vals)
-    β = np.mean(calc_vals) / np.mean(true_vals)
-    kge_err = 1 - np.sqrt((1 - r)**2 + (1 - α)**2 + (1 - β)**2)
-    return dict(
-        pearsonr = pearsonr_err,
-        r_square = pearsonr_err**2,
-        rmse = rmse_err,
-        norm_rmse = norm_rmse_err,
-        nse = nse_err,
-        kge = kge_err,
-    )
+concat_all_y = np.concatenate([y_train, y_train_pred_scaled, y_test_pred_scaled, y_test])
 
-streamflow = df[endogenous_fields]
-y_mean = np.mean(streamflow)
-y_std = np.std(streamflow)
-sf_norm = lambda f: (f - y_mean)/y_std
-
-
-y_train_val = (y_train * y_std + y_mean)
-y_train_pred_val = (y_train_pred[:,0] * y_std + y_mean)
-y_test_val = (y_test * y_std + y_mean)
-y_test_pred_val = (y_test_pred[:,0] * y_std + y_mean)
-
-y_train_pred_val[y_train_pred_val < 0] = 0
-y_test_pred_val[y_test_pred_val < 0] = 0
-
-y1 = y_train_val
-y2 = y_train_pred_val
-y3 = y_test_val
-y4 = y_test_pred_val
-
-# pd.DataFrame(dict(
-#     train = errors(y1, y2),
-#     test = errors(y3, y4),
-# )).T
-
-# y_train_pred[y_train_pred < 0] = 0
-# y_test_pred[y_test_pred < 0] = 0
-min_y = np.min(np.concatenate([y1, y2, y3, y4]))
-max_y = np.max(np.concatenate([y1, y2, y3, y4]))
-plt.scatter(y1, y2, label="train", s=0.2)
-plt.scatter(y3, y4, label="test", s=0.2)
+min_y = np.min(concat_all_y)
+max_y = np.max(concat_all_y)
+plt.scatter(y_train, y_train_pred_scaled, label="train", s=0.2)
+plt.scatter(y_test, y_test_pred_scaled, label="test", s=0.2)
 plt.plot([min_y, max_y], [min_y, max_y], label="1:1", c="red")
 plt.legend()
 plt.xlabel("Observed Flow (cfs)")
 plt.ylabel("Simulated Flow (cfs)")
-
+matplotlib.use('TkAgg')
 plt.show()
 
 obs = pd.concat([
