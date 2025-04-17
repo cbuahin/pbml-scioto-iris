@@ -1,5 +1,5 @@
 import os
-from typing import List
+from typing import List, Union
 import pandas as pd
 import numpy as np
 import seaborn as sns
@@ -126,9 +126,8 @@ precip_perturbations = np.arange(1.0, 1.5+0.05, 0.05)
 x_train_a= np.repeat(x_train_a.values[:, np.newaxis, :], len(precip_perturbations), axis=1)
 
 
-def probabilistic_layer(y_pred):
-    distribution = tfp.distributions.Normal(loc=layers.Dense(1)(y_pred[...,0]),
-                                            scale=tf.exp(layers.Dense(1)(y_pred[...,1])))
+def probabilistic_layer(y_pred: tf.Tensor) -> tfp.distributions.Distribution:
+    distribution = tfp.distributions.Normal(loc=y_pred[...,0], scale=y_pred[...,1])
     return distribution
 
 # perturb the rainfall fields
@@ -137,7 +136,7 @@ for i, perturbation in enumerate(precip_perturbations):
 
 model = models.Sequential([
     layers.Input(shape=(None, len(exogenous_fields))),
-    layers.Dense(64),
+    layers.Dense(32),
     layers.PReLU(shared_axes=[-1]),
     layers.Dropout(dropout),
     layers.Dense(128),
@@ -150,56 +149,28 @@ model = models.Sequential([
     layers.PReLU(shared_axes=[-1]),
     layers.Dropout(dropout),
     # output layer
-    layers.Dense(1, activation="relu"),
+    layers.Dense(2),
     # probabilistic layer
     # layers.Lambda(probabilistic_layer)
     ]
 )
-# inp_layer = layers.Input(shape=(None, len(exogenous_fields)))
-#
-# model_layer = layers.Dense(64)(inp_layer)
-# model_layer = layers.PReLU(shared_axes=[-1])(model_layer)
-# model_layer = layers.Dropout(dropout)(model_layer)
-#
-# model_layer = layers.Dense(128)(model_layer)
-# model_layer = layers.PReLU(shared_axes=[-1])(model_layer)
-# model_layer = layers.Dropout(dropout)(model_layer)
-#
-# model_layer = layers.Dense(128)(model_layer)
-# model_layer = layers.PReLU(shared_axes=[-1])(model_layer)
-# model_layer = layers.Dropout(dropout)(model_layer)
-#
-# model_layer = layers.Dense(32)(model_layer)
-# model_layer = layers.PReLU(shared_axes=[-1])(model_layer)
-# model_layer = layers.Dropout(dropout)(model_layer)
-#
-# output = layers.Dense(1, activation=layers.PReLU(shared_axes=[-1]))(model_layer)
-# model = Model(inp_layer, output)
-
-
-# test model output
-# model.predict(x_train[:5])
 
 
 def nse_loss(y_true, y_pred):
-    if isinstance(y_pred, tfp.distributions.Distribution):
-        y_pred_mean = y_pred.mean()
-    else:
-        y_pred_mean = y_pred
+
+    y_pred_mean = y_pred
 
     if len(y_pred_mean.shape) > 2:
-        y_pred_mean = y_pred_mean[:,0,...]
+        y_pred_mean = y_pred_mean[...,0,0]
 
     return K.sum((y_pred_mean-y_true)**2)/K.sum((y_true-K.mean(y_true))**2)
 
 def mse_loss(y_true, y_pred):
-    if isinstance(y_pred, tfp.distributions.Distribution):
-        y_pred_mean = y_pred.mean()
-    else:
-        y_pred_mean = y_pred
 
-        if len(y_pred_mean.shape) > 2:
-            y_pred_mean = y_pred_mean[:,0,...]
+    y_pred_mean = y_pred
+
+    if len(y_pred_mean.shape) > 2:
+        y_pred_mean = y_pred_mean[...,0,0]
 
     return K.mean(K.square(y_pred_mean - y_true))
 
@@ -211,16 +182,22 @@ def monotonicity_loss(y_true, y_pred):
     :param y_pred:
     :return:
     """
-    if isinstance(y_pred, tfp.distributions.Distribution):
-        y_pred_mean = y_pred.mean()
-    else:
-        y_pred_mean = y_pred
+    # B,C,F
+    mse_loss_mon_loss = 0.0
 
-    int_mse_loss = 0
+    y_pred_mean = y_pred
+
+    if len(y_pred_mean.shape) > 2:
+        y_pred_mean = y_pred_mean[...,0]
+        y_pred_permute = tf.transpose(y_pred_mean, perm=[1, 0])
+        mse_loss_mon_loss = activations.relu(
+            y_pred_permute[0, :] - y_pred_permute[1:, :]
+        )
+
+        mse_loss_mon_loss = tf.reduce_mean(K.square(mse_loss_mon_loss))
 
 
-    # y_pred = tf.squeeze(y_pred, axis=-1)
-    return int_mse_loss
+    return mse_loss_mon_loss
 
 def negative_log_likelihood(y_true, y_pred):
     """
@@ -229,17 +206,22 @@ def negative_log_likelihood(y_true, y_pred):
     :param y_pred:
     :return:
     """
-    if isinstance(y_pred, tfp.distributions.Distribution):
+
+
         # check shape of y_pred scale
-        if len(y_pred.scale.shape) > 2:
-            y_true = tf.repeat(y_true[:, tf.newaxis , ...], y_pred.scale.shape[1], axis=1)
-            log_likelihood = y_pred.log_prob(y_true)
-        else:
-            log_likelihood = y_pred.log_prob(y_true)
+    if len(y_pred.shape) > 2:
+        normal: tfp.distributions.Distribution = probabilistic_layer(
+            y_pred[..., 0 , :]
+        )
+        log_likelihood = normal.log_prob(y_true)
+    else:
+        normal: tfp.distributions.Distribution = probabilistic_layer(
+            y_pred
+        )
+        log_likelihood = normal.log_prob(y_true)
 
-        return -tf.reduce_mean(log_likelihood)
+    return -tf.reduce_mean(log_likelihood)
 
-    return 0.0
 
 def combined_loss(y_true, y_pred):
     """
@@ -249,13 +231,15 @@ def combined_loss(y_true, y_pred):
     :return:
     """
     mse = mse_loss(y_true, y_pred)
-    ngll
-    return mse + nse
+    monotonicity = monotonicity_loss(y_true, y_pred)
+    neg_ll = negative_log_likelihood(y_true, y_pred)
+
+    return mse + monotonicity + neg_ll
 
 model.compile(
     optimizer="adam",
-    metrics=[nse_loss, mse_loss],
-    loss=mse_loss,
+    metrics=[nse_loss, mse_loss, negative_log_likelihood],
+    loss=combined_loss,
     # run_eagerly=True
 )
 
@@ -265,8 +249,8 @@ model.compile(
 model.summary()
 
 
-batch_size = 64
-epochs = 100
+batch_size = 32
+epochs = 1000
 #
 # split2 = X_train.shape[0] * 70 // 100
 # split2dt = nonaind[split2]
